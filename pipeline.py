@@ -94,6 +94,24 @@ LANGUAGES = {
     }
  }
 
+TRANSLATION_MODES = {
+    "1": {
+        "name": "Formal",
+        "value": "formal"
+    },
+    "2": {
+        "name": "Classic Colloquial",
+        "value": "classic-colloquial"
+    },
+    "3": {
+        "name": "Modern Colloquial",
+        "value": "modern-colloquial"
+    },
+    "4": {
+        "name": "Code Mixed",
+        "value": "code-mixed"
+    }
+}
 
 # ============================================================
 #                     INPUT HELPERS
@@ -172,6 +190,20 @@ def get_processing_mode():
     )
 
     return "sequential" if choice == "1" else "parallel"
+
+def get_translation_mode():
+
+    print("\nTranslation Style\n")
+
+    for key, value in TRANSLATION_MODES.items():
+        print(f"{key}. {value['name']}")
+
+    choice = ask_choice(
+        "\nEnter choice : ",
+        TRANSLATION_MODES.keys()
+    )
+
+    return TRANSLATION_MODES[choice]["value"]
 
 
 def get_target_languages():
@@ -859,16 +891,12 @@ def translate_language(client, job):
         try:
 
             response = client.text.translate(
-
-                input=english,
-
-                source_language_code="en-IN",
-
-                target_language_code=job["code"],
-
-                model="sarvam-translate:v1"
-
-            )
+                    input=english,
+                    source_language_code="en-IN",
+                    target_language_code=job["code"],
+                    model="mayura:v1",
+                    mode=job["translation_mode"]
+                )
 
             ws.cell(
                 row=row,
@@ -1109,12 +1137,17 @@ def main():
     project = get_project_folder()
 
     processing_mode = get_processing_mode()
+    
+    translation_mode = get_translation_mode()
 
     language_ids = get_target_languages()
 
     jobs = configure_languages(
     language_ids
     )
+    
+    for job in jobs:
+     job["translation_mode"] = translation_mode
 
     audio_format = get_audio_format()
     
