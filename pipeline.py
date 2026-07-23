@@ -37,7 +37,9 @@ IGNORE_EXCELS = {
     "Marathi.xlsx",
     "Punjabi.xlsx",
     "Tamil.xlsx",
-    "Bengali.xlsx"
+    "Bengali.xlsx",
+    "Kannada.xlsx",
+    "Gujarati.xlsx"
 }
 
 AUDIO_EXTENSIONS = (
@@ -79,6 +81,16 @@ LANGUAGES = {
         "name": "Bengali",
         "code": "bn-IN",
         "prefix": "bn"
+    },
+    "7": {
+        "name": "Kannada",
+        "code": "kn-IN",
+        "prefix": "kn"
+    },
+    "8": {
+        "name": "Gujarati",
+        "code": "gu-IN",
+        "prefix": "gu"
     }
  }
 
