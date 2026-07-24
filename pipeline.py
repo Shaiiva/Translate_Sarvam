@@ -15,7 +15,25 @@ from sarvamai.play import save
 #                       CONSTANTS
 # ============================================================
 
-WHISPER_MODEL = "small"
+def get_whisper_model():
+
+    print("\nWhisper Model")
+    print("1. Small")
+    print("2. Medium")
+    
+
+    choice = ask_choice(
+        "\nEnter choice : ",
+        {"1", "2"}
+    )
+
+    models = {
+        "1": "small",
+        "2": "medium",
+
+    }
+
+    return models[choice]
 
 MASTER_EXCEL = "Master_Transcript.xlsx"
 
@@ -467,12 +485,12 @@ def validate_headers(ws, required):
 #                 WHISPER / SARVAM
 # ============================================================
 
-def load_whisper():
+def load_whisper(model_name):
 
-    print("\nLoading Whisper...")
+    print(f"\nLoading Whisper ({model_name})...")
 
     model = WhisperModel(
-        WHISPER_MODEL,
+        model_name,
         device="cpu",
         compute_type="int8"
     )
@@ -614,7 +632,9 @@ def transcribe_audio(project, whisper):
         )
 
         segments, info = whisper.transcribe(
-            audio
+            audio,
+            beam_size=5,
+            vad_filter=True
         )
 
         transcript = " ".join(
@@ -1130,35 +1150,12 @@ def run_pipeline(
 
 def main():
 
-    api_key = get_api_key()
-
     input_type = get_input_type()
 
     project = get_project_folder()
 
-    processing_mode = get_processing_mode()
-    
-    translation_mode = get_translation_mode()
-
-    language_ids = get_target_languages()
-
-    jobs = configure_languages(
-    language_ids
-    )
-    
-    for job in jobs:
-     job["translation_mode"] = translation_mode
-
-    audio_format = get_audio_format()
-    
-
     project_mode = get_project_mode(
         project
-    )
-
-    create_output_structure(
-        project,
-        jobs
     )
 
     create_master_excel(
@@ -1167,31 +1164,32 @@ def main():
 
     if input_type == "audio":
 
-     validate_audio_project(
-        project
-    )
+        validate_audio_project(
+            project
+        )
 
     else:
 
-     if not os.path.exists(master_excel(project)):
-        find_transcript_excel(
-            project
-        )
+        if not os.path.exists(master_excel(project)):
+            find_transcript_excel(
+                project
+            )
 
     whisper = None
 
     if input_type == "audio":
 
-        whisper = load_whisper()
+        whisper_model = get_whisper_model()
+        whisper = load_whisper(whisper_model)
 
     if project_mode == "fresh":
 
-     if input_type == "audio":
+        if input_type == "audio":
 
-        transcribe_audio(
-            project,
-            whisper
-        )
+            transcribe_audio(
+                project,
+                whisper
+            )
 
     else:
 
@@ -1202,23 +1200,49 @@ def main():
                 project
             )
 
-    run_pipeline(
+    api_key = input(
+        "\nSarvam API Key (Press Enter to skip): "
+    ).strip()
 
-        api_key,
+    if not api_key:
 
+        print("\nSkipping Translation / TTS.")
+        print("\n=================================")
+        print(" Pipeline Completed Successfully ")
+        print("=================================")
+
+        return
+
+    processing_mode = get_processing_mode()
+
+    translation_mode = get_translation_mode()
+
+    language_ids = get_target_languages()
+
+    jobs = configure_languages(language_ids)
+
+    for job in jobs:
+        job["translation_mode"] = translation_mode
+
+    audio_format = get_audio_format()
+
+    create_output_structure(
         project,
+        jobs
+    )
 
+    run_pipeline(
+        api_key,
+        project,
         jobs,
-
         processing_mode,
-        
         audio_format
-
     )
 
     print("\n=================================")
     print(" Pipeline Completed Successfully ")
     print("=================================")
+
 
 
 if __name__ == "__main__":
