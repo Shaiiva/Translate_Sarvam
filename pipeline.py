@@ -48,17 +48,6 @@ LANGUAGE_HEADERS = [
     "Translation"
 ]
 
-IGNORE_EXCELS = {
-    MASTER_EXCEL,
-    "Hindi.xlsx",
-    "Telugu.xlsx",
-    "Marathi.xlsx",
-    "Punjabi.xlsx",
-    "Tamil.xlsx",
-    "Bengali.xlsx",
-    "Kannada.xlsx",
-    "Gujarati.xlsx"
-}
 
 AUDIO_EXTENSIONS = (
     ".wav",
@@ -70,6 +59,12 @@ AUDIO_EXTENSIONS = (
 )
 
 LANGUAGES = {
+    
+    "0": {
+        "name": "English",
+        "code": "en-IN",
+        "prefix": "en"
+    },
     "1": {
         "name": "Hindi",
         "code": "hi-IN",
@@ -157,6 +152,20 @@ def ask_choice(message, choices):
             return value
 
         print("Invalid choice.")
+        
+        
+def get_pace():
+    while True:
+        try:
+            value = input("Pace (Default 1.0): ").strip()
+            if value == "":
+                return 1.0
+            value = float(value)
+            if 0.5 <= value <= 2.0:
+                return value
+        except ValueError:
+            pass
+        print("Enter a value between 0.5 and 2.0.")
 
 
 # ============================================================
@@ -194,6 +203,24 @@ def get_project_folder():
             return os.path.abspath(folder)
 
         print("Folder not found.")
+        
+def get_transcript_excel():
+
+    while True:
+
+        excel = input(
+            "\nTranscript Excel Path : "
+        ).strip().strip('"')
+
+        if not os.path.isfile(excel):
+            print("File not found.")
+            continue
+
+        if not excel.lower().endswith(".xlsx"):
+            print("Please select an .xlsx file.")
+            continue
+
+        return os.path.abspath(excel)
 
 
 def get_processing_mode():
@@ -222,6 +249,20 @@ def get_translation_mode():
     )
 
     return TRANSLATION_MODES[choice]["value"]
+
+def get_transcript_language():
+
+    print("\nTranscript Language\n")
+
+    for key, value in LANGUAGES.items():
+        print(f"{key}. {value['name']}")
+
+    choice = ask_choice(
+        "\nEnter choice : ",
+        LANGUAGES.keys()
+    )
+
+    return LANGUAGES[choice]["code"]
 
 
 def get_target_languages():
@@ -292,14 +333,19 @@ def configure_languages(language_ids):
             speaker = ask_non_empty(
                 "Speaker : "
             )
+            pace = get_pace()
+            
+        else: 
+            pace = 1.0
 
-        jobs.append({
+        jobs.append ({
 
             "name": lang["name"],
             "code": lang["code"],
             "prefix": lang["prefix"],
             "mode": mode,
-            "speaker": speaker
+            "speaker": speaker,
+            "pace": pace
 
         })
 
@@ -423,38 +469,6 @@ def validate_audio_project(project):
         raise Exception(
             "No audio files found in project folder."
         )
-
-
-def find_transcript_excel(project):
-
-    candidates = []
-
-    for file in os.listdir(project):
-
-        if not file.lower().endswith(".xlsx"):
-            continue
-
-        if file in IGNORE_EXCELS:
-            continue
-
-        candidates.append(
-            os.path.join(project, file)
-        )
-
-    if len(candidates) == 0:
-
-        raise Exception(
-            "Transcript Excel not found."
-        )
-
-    if len(candidates) > 1:
-
-        raise Exception(
-            "Multiple transcript Excel files found."
-        )
-
-    return candidates[0]
-
 
 def validate_headers(ws, required):
 
@@ -665,15 +679,9 @@ def transcribe_audio(project, whisper):
 #          TRANSCRIPT -> MASTER TRANSCRIPT
 # ============================================================
 
-def import_transcript_excel(project):
-
-    source_excel = find_transcript_excel(
-        project
-    )
-
-    source = load_workbook(
-        source_excel
-    )
+def import_transcript_excel(project, transcript_excel):
+    
+    source = load_workbook(transcript_excel)
 
     source_ws = source.active
 
@@ -782,11 +790,12 @@ def create_language_excel(job):
     wb.close()
 
 
-def populate_language_excel(project, job):
+def populate_language_excel(transcript_excel, job):
 
     create_language_excel(job)
-
-    master_wb, master_ws = load_master(project)
+    
+    master_wb = load_workbook(transcript_excel)
+    master_ws = master_wb.active
 
     lang_wb = load_workbook(job["excel"])
     lang_ws = lang_wb.active
@@ -884,7 +893,7 @@ def translate_language(client, job):
             column=file_col
         ).value
 
-        english = ws.cell(
+        source_text = ws.cell(
             row=row,
             column=text_col
         ).value
@@ -898,7 +907,7 @@ def translate_language(client, job):
 
             skipped += 1
             continue
-        if not english or not str(english).strip():
+        if not source_text or not str(source_text).strip():
             skipped += 1
             continue
 
@@ -910,13 +919,25 @@ def translate_language(client, job):
 
         try:
 
+            if job["transcript_language"] == job["code"]:
+
+                ws.cell(
+                    row=row,
+                    column=trans_col
+                ).value = source_text
+
+                wb.save(job["excel"])
+
+                completed += 1
+                continue
+
             response = client.text.translate(
-                    input=english,
-                    source_language_code="en-IN",
-                    target_language_code=job["code"],
-                    model="mayura:v1",
-                    mode=job["translation_mode"]
-                )
+                input=source_text,
+                source_language_code=job["transcript_language"],
+                target_language_code=job["code"],
+                model="mayura:v1",
+                mode=job["translation_mode"]
+            )
 
             ws.cell(
                 row=row,
@@ -1018,7 +1039,8 @@ def generate_audio(client, job, audio_format):
                 text=translated,
                 target_language_code=job["code"],
                 model="bulbul:v3",
-                speaker=job["speaker"]
+                speaker=job["speaker"],
+                pace=job["pace"]
             )
 
             save(audio, temp_output)
@@ -1033,16 +1055,16 @@ def generate_audio(client, job, audio_format):
         except Exception as e:
             print(e)
             
-def process_language(api_key, project, job, audio_format):
+def process_language(api_key, project, transcript_excel, job, audio_format):
 
     try:
 
         client = create_sarvam_client(api_key)
 
         populate_language_excel(
-            project,
-            job
-        )
+              transcript_excel,
+                job
+               )
 
         translate_language(
             client,
@@ -1077,10 +1099,13 @@ def run_pipeline(
     project,
 
     jobs,
+    
+    transcript_excel,
 
     processing_mode,
     
     audio_format
+    
   ):
 
     if processing_mode == "sequential":
@@ -1092,6 +1117,8 @@ def run_pipeline(
                 api_key,
 
                 project,
+                
+                transcript_excel,
 
                 job,
                 
@@ -1122,6 +1149,8 @@ def run_pipeline(
                 api_key,
 
                 project,
+                
+                transcript_excel,
 
                 job,
                 
@@ -1151,29 +1180,26 @@ def run_pipeline(
 def main():
 
     input_type = get_input_type()
+    
+    transcript_language = "en-IN"
 
-    project = get_project_folder()
-
-    project_mode = get_project_mode(
-        project
-    )
-
-    create_master_excel(
-        project
-    )
+    transcript_excel = None
 
     if input_type == "audio":
-
-        validate_audio_project(
-            project
-        )
-
+        project = get_project_folder()
     else:
+        transcript_excel = get_transcript_excel()
+        transcript_language = get_transcript_language()
+        project = os.path.dirname(transcript_excel)
 
-        if not os.path.exists(master_excel(project)):
-            find_transcript_excel(
-                project
-            )
+    project_mode = get_project_mode(project)
+
+    if input_type == "audio":
+      create_master_excel(project)
+
+    if input_type == "audio":
+        validate_audio_project(project)
+        
 
     whisper = None
 
@@ -1197,8 +1223,12 @@ def main():
             print("Using existing Master_Transcript.xlsx")
         else:
             import_transcript_excel(
-                project
+                project,
+                transcript_excel
             )
+            
+    if input_type == "audio":
+        transcript_excel = master_excel(project)
 
     api_key = input(
         "\nSarvam API Key (Press Enter to skip): "
@@ -1207,9 +1237,7 @@ def main():
     if not api_key:
 
         print("\nSkipping Translation / TTS.")
-        print("\n=================================")
         print(" Pipeline Completed Successfully ")
-        print("=================================")
 
         return
 
@@ -1223,6 +1251,7 @@ def main():
 
     for job in jobs:
         job["translation_mode"] = translation_mode
+        job["transcript_language"] = transcript_language
 
     audio_format = get_audio_format()
 
@@ -1235,13 +1264,14 @@ def main():
         api_key,
         project,
         jobs,
+        transcript_excel,
         processing_mode,
         audio_format
     )
 
-    print("\n=================================")
+    
     print(" Pipeline Completed Successfully ")
-    print("=================================")
+    
 
 
 
