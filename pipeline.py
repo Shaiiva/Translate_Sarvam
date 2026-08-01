@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from openpyxl import Workbook, load_workbook
 from faster_whisper import WhisperModel
 from sarvamai import SarvamAI
+from saaras_stt import transcribe as saaras_transcribe
 from sarvamai.play import save
 
 
@@ -34,6 +35,22 @@ def get_whisper_model():
     }
 
     return models[choice]
+
+def get_stt_engine():
+
+    print("\nSpeech To Text Engine")
+    print("1. Whisper")
+    print("2. Saaras v4")
+
+    choice = ask_choice(
+        "\nEnter choice : ",
+        {"1", "2"}
+    )
+
+    if choice == "1":
+        return "whisper"
+
+    return "saaras"
 
 MASTER_EXCEL = "Master_Transcript.xlsx"
 
@@ -600,7 +617,12 @@ def get_audio_files(project):
 #             AUDIO -> MASTER TRANSCRIPT
 # ============================================================
 
-def transcribe_audio(project, whisper):
+def transcribe_audio(
+    project,
+    stt_engine,
+    whisper=None,
+    client=None
+):
 
     wb, ws = load_master(project)
 
@@ -637,42 +659,42 @@ def transcribe_audio(project, whisper):
         filename = os.path.basename(audio)
 
         if filename in completed:
-
             skipped += 1
             continue
 
-        print(
-            f"[{index}/{total}] {filename}"
-        )
+        
+        print(f"[{index}/{total}] {filename}")
 
-        segments, info = whisper.transcribe(
-            audio,
-            beam_size=5,
-            vad_filter=True
-        )
+        if stt_engine == "whisper":
 
-        transcript = " ".join(
+            segments, info = whisper.transcribe(
+                audio,
+                beam_size=5,
+                vad_filter=True
+            )
 
-            s.text.strip()
+            transcript = " ".join(
+                s.text.strip()
+                for s in segments
+            )
 
-            for s in segments
+        else:
 
-        )
+            transcript = saaras_transcribe(
+                audio,
+                client
+            )
 
         ws.append([
-
             filename,
             transcript
-
         ])
 
         wb.save(master_excel(project))
 
     wb.close()
 
-    print(
-        f"Skipped : {skipped}"
-    )
+    print(f"Skipped : {skipped}")
 
 
 # ============================================================
@@ -1186,6 +1208,9 @@ def main():
     transcript_excel = None
 
     if input_type == "audio":
+        stt_engine = None
+    if input_type == "audio":
+        stt_engine = get_stt_engine()
         project = get_project_folder()
     else:
         transcript_excel = get_transcript_excel()
@@ -1202,30 +1227,32 @@ def main():
         
 
     whisper = None
+    stt_client = None
 
     if input_type == "audio":
 
-        whisper_model = get_whisper_model()
-        whisper = load_whisper(whisper_model)
+        if stt_engine == "whisper":
 
-    if project_mode == "fresh":
+            whisper_model = get_whisper_model()
+            whisper = load_whisper(whisper_model)
 
-        if input_type == "audio":
-
-            transcribe_audio(
-                project,
-                whisper
-            )
-
-    else:
-
-        if os.path.exists(master_excel(project)):
-            print("Using existing Master_Transcript.xlsx")
         else:
-            import_transcript_excel(
-                project,
-                transcript_excel
-            )
+
+            api_key = get_api_key()
+            stt_client = create_sarvam_client(api_key)
+
+    
+
+            if input_type == "audio":
+
+                transcribe_audio(
+                            project,
+                            stt_engine,
+                            whisper,
+                            stt_client
+                        )
+
+    
             
     if input_type == "audio":
         transcript_excel = master_excel(project)
