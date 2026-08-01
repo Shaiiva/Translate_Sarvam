@@ -1,8 +1,7 @@
 import os
 import shutil
 import subprocess
-from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import sys
 
 from openpyxl import Workbook, load_workbook
 from faster_whisper import WhisperModel
@@ -240,19 +239,6 @@ def get_transcript_excel():
         return os.path.abspath(excel)
 
 
-def get_processing_mode():
-
-    print("\nProcessing Mode")
-    print("1. Sequential")
-    print("2. Parallel")
-
-    choice = ask_choice(
-        "\nEnter choice : ",
-        {"1", "2"}
-    )
-
-    return "sequential" if choice == "1" else "parallel"
-
 def get_translation_mode():
 
     print("\nTranslation Style\n")
@@ -328,7 +314,7 @@ def get_audio_format():
 
     return formats[choice]
 
-def configure_languages(language_ids):
+def configure_languages(language_ids, transcript_excel=None, input_type="audio"):
 
     jobs = []
 
@@ -342,6 +328,19 @@ def configure_languages(language_ids):
             "Mode (T / A / TA) : ",
             {"T", "A", "TA"}
         ).upper()
+
+        if input_type == "transcript":
+
+            source_wb = load_workbook(transcript_excel)
+            source_ws = source_wb.active
+            source_headers = validate_file_name_header(source_ws)
+            source_wb.close()
+
+            text_column = select_text_column(source_headers)
+
+        else:
+
+            text_column = "Source Transcript"
 
         speaker = None
 
@@ -362,7 +361,8 @@ def configure_languages(language_ids):
             "prefix": lang["prefix"],
             "mode": mode,
             "speaker": speaker,
-            "pace": pace
+            "pace": pace,
+            "text_column": text_column
 
         })
 
@@ -402,6 +402,14 @@ def audio_folder(project, job):
     return os.path.join(
         language_folder(project, job),
         "Audio"
+    )
+
+
+def preview_folder(project, job):
+
+    return os.path.join(
+        audio_folder(project, job),
+        "Preview"
     )
 
 
@@ -463,9 +471,15 @@ def create_output_structure(project, jobs):
                 exist_ok=True
             )
 
+            os.makedirs(
+                preview_folder(project, job),
+                exist_ok=True
+            )
+
         job["folder"] = folder
         job["excel"] = language_excel(project, job)
         job["audio_folder"] = audio_folder(project, job)
+        job["preview_folder"] = preview_folder(project, job)
 
 # ============================================================
 #                     VALIDATION
@@ -489,6 +503,21 @@ def validate_audio_project(project):
 
 def validate_headers(ws, required):
 
+    headers = get_worksheet_headers(ws)
+
+    for item in required:
+
+        if item not in headers:
+
+            raise Exception(
+                f"Missing header : {item}"
+            )
+
+    return headers
+
+
+def get_worksheet_headers(ws):
+
     headers = {}
 
     for col in range(1, ws.max_column + 1):
@@ -501,15 +530,63 @@ def validate_headers(ws, required):
         if value:
             headers[str(value).strip()] = col
 
-    for item in required:
+    return headers
 
-        if item not in headers:
 
-            raise Exception(
-                f"Missing header : {item}"
-            )
+def validate_file_name_header(ws):
+
+    headers = get_worksheet_headers(ws)
+
+    if "File Name" not in headers:
+
+        raise Exception(
+            "Missing header : File Name"
+        )
 
     return headers
+
+
+def select_text_column(headers):
+
+    options = {
+
+        name: column
+
+        for name, column in headers.items()
+
+        if name != "File Name"
+
+    }
+
+    if not options:
+
+        raise Exception(
+            "No text columns found besides File Name."
+        )
+
+    indexed = {}
+
+    print("\nText Columns")
+
+    for index, name in enumerate(sorted(options.keys()), 1):
+
+        print(f"{index}. {name}")
+        indexed[str(index)] = name
+
+    choice = ask_choice(
+        "\nSelect text column : ",
+        indexed.keys()
+    )
+
+    return indexed[choice]
+
+
+def get_tts_column_name(job):
+
+    if job["mode"] == "A":
+        return job["text_column"]
+
+    return "Translation"
 
 
 # ============================================================
@@ -707,13 +784,13 @@ def import_transcript_excel(project, transcript_excel):
 
     source_ws = source.active
 
-    source_headers = validate_headers(
+    source_headers = validate_file_name_header(source_ws)
 
-        source_ws,
+    if "Source Transcript" not in source_headers:
 
-        MASTER_HEADERS
-
-    )
+        raise Exception(
+            "Missing header : Source Transcript"
+        )
 
     master_wb, master_ws = load_master(
         project
@@ -812,7 +889,7 @@ def create_language_excel(job):
     wb.close()
 
 
-def populate_language_excel(transcript_excel, job):
+def populate_language_excel(transcript_excel, job, input_type="audio"):
 
     create_language_excel(job)
     
@@ -822,10 +899,28 @@ def populate_language_excel(transcript_excel, job):
     lang_wb = load_workbook(job["excel"])
     lang_ws = lang_wb.active
 
-    master_headers = validate_headers(
-        master_ws,
-        MASTER_HEADERS
-    )
+    if input_type == "transcript":
+
+        source_headers = validate_file_name_header(master_ws)
+
+        if job["text_column"] not in source_headers:
+
+            raise Exception(
+                f"Missing header : {job['text_column']}"
+            )
+
+        file_col = source_headers["File Name"]
+        source_text_col = source_headers[job["text_column"]]
+
+    else:
+
+        master_headers = validate_headers(
+            master_ws,
+            MASTER_HEADERS
+        )
+
+        file_col = master_headers["File Name"]
+        source_text_col = master_headers["Source Transcript"]
 
     lang_headers = validate_headers(
         lang_ws,
@@ -855,12 +950,12 @@ def populate_language_excel(transcript_excel, job):
 
         filename = master_ws.cell(
             row=row,
-            column=master_headers["File Name"]
+            column=file_col
         ).value
 
         transcript = master_ws.cell(
             row=row,
-            column=master_headers["Source Transcript"]
+            column=source_text_col
         ).value
 
         if filename in existing:
@@ -888,9 +983,7 @@ def populate_language_excel(transcript_excel, job):
 def translate_language(client, job):
 
     if job["mode"] == "A":
-
-        if not os.path.exists(job["excel"]):
-            return
+        return
 
     wb = load_workbook(job["excel"])
     ws = wb.active
@@ -984,6 +1077,256 @@ def translate_language(client, job):
 
 
 # ============================================================
+#                  AUDIO PREVIEW / REVIEW
+# ============================================================
+
+def open_preview_folder(path):
+
+    if sys.platform == "win32":
+        os.startfile(path)
+        return
+
+    if sys.platform == "darwin":
+        subprocess.run(["open", path], check=False)
+        return
+
+    subprocess.run(["xdg-open", path], check=False)
+
+
+def parse_regenerate_indices(raw, total):
+
+    if not raw:
+        return []
+
+    indices = []
+
+    for part in raw.replace(" ", "").split(","):
+
+        if not part.isdigit():
+            raise ValueError(f"Invalid entry : {part}")
+
+        index = int(part)
+
+        if index < 1 or index > total:
+            raise ValueError(f"Out of range : {index}")
+
+        indices.append(index)
+
+    return sorted(set(indices))
+
+
+def get_preview_files(job, audio_format):
+
+    folder = job["preview_folder"]
+
+    if not os.path.isdir(folder):
+        return []
+
+    extension = f".{audio_format}"
+
+    return sorted([
+
+        name for name in os.listdir(folder)
+
+        if name.lower().endswith(extension)
+
+    ])
+
+
+def find_tts_text_for_preview(job, preview_name):
+
+    stem = os.path.splitext(preview_name)[0]
+    prefix = f"{job['prefix']}_"
+
+    if not stem.startswith(prefix):
+        return None, None
+
+    base = stem[len(prefix):]
+
+    wb = load_workbook(job["excel"])
+    ws = wb.active
+
+    headers = validate_headers(
+        ws,
+        LANGUAGE_HEADERS
+    )
+
+    file_col = headers["File Name"]
+    tts_col = headers[get_tts_column_name(job)]
+
+    for row in range(2, ws.max_row + 1):
+
+        filename = ws.cell(
+            row=row,
+            column=file_col
+        ).value
+
+        if not filename:
+            continue
+
+        if os.path.splitext(str(filename))[0] == base:
+
+            tts_text = ws.cell(
+                row=row,
+                column=tts_col
+            ).value
+
+            wb.close()
+            return base, tts_text
+
+    wb.close()
+    return base, None
+
+
+def synthesize_preview_audio(client, job, base, tts_text, audio_format):
+
+    temp_output = os.path.join(
+        job["preview_folder"],
+        f"{job['prefix']}_{base}.wav"
+    )
+
+    audio = client.text_to_speech.convert(
+        text=tts_text,
+        target_language_code=job["code"],
+        model="bulbul:v3",
+        speaker=job["speaker"],
+        pace=job["pace"]
+    )
+
+    save(audio, temp_output)
+
+    return convert_audio(
+        temp_output,
+        audio_format
+    )
+
+
+def finalize_preview_file(job, preview_name):
+
+    source = os.path.join(
+        job["preview_folder"],
+        preview_name
+    )
+
+    destination = os.path.join(
+        job["audio_folder"],
+        preview_name
+    )
+
+    shutil.move(source, destination)
+
+
+def review_generated_audio(client, job, audio_format):
+
+    if job["mode"] == "T":
+        return
+
+    while True:
+
+        preview_files = get_preview_files(job, audio_format)
+
+        if not preview_files:
+            return
+
+        print(f"\n========== {job['name']} Audio Review ==========")
+        print("Preview files are ready. Click any file in the folder to play it.\n")
+
+        for index, name in enumerate(preview_files, 1):
+
+            path = os.path.join(
+                job["preview_folder"],
+                name
+            )
+
+            print(f"{index}. {name}")
+            print(f"   {path}")
+
+        print(f"\nOpening preview folder...")
+        open_preview_folder(job["preview_folder"])
+        print(
+            "Double-click files in File Explorer to listen. "
+            "Come back here when you're done."
+        )
+
+        input("\nPress Enter when you're finished listening...")
+
+        while True:
+
+            raw = input(
+                "\nEnter comma-separated numbers to REGENERATE "
+                "(empty = save all remaining) : "
+            ).strip()
+
+            try:
+                regenerate_indices = parse_regenerate_indices(
+                    raw,
+                    len(preview_files)
+                )
+                break
+            except ValueError as error:
+                print(error)
+
+        if not regenerate_indices:
+
+            for name in preview_files:
+                finalize_preview_file(job, name)
+                print(f"Saved : {name}")
+
+            return
+
+        regenerate_names = {
+
+            preview_files[index - 1]
+
+            for index in regenerate_indices
+
+        }
+
+        for name in preview_files:
+
+            if name in regenerate_names:
+                continue
+
+            finalize_preview_file(job, name)
+            print(f"Saved : {name}")
+
+        for name in sorted(regenerate_names):
+
+            base, tts_text = find_tts_text_for_preview(
+                job,
+                name
+            )
+
+            preview_path = os.path.join(
+                job["preview_folder"],
+                name
+            )
+
+            if os.path.exists(preview_path):
+                os.remove(preview_path)
+
+            if not tts_text:
+
+                print(f"Cannot regenerate (missing text) : {name}")
+                continue
+
+            print(f"Regenerating : {name}")
+
+            try:
+
+                synthesize_preview_audio(
+                    client,
+                    job,
+                    base,
+                    tts_text,
+                    audio_format
+                )
+
+            except Exception as error:
+                print(error)
+
+
+# ============================================================
 #                       TTS
 # ============================================================
 
@@ -1001,7 +1344,7 @@ def generate_audio(client, job, audio_format):
     )
 
     file_col = headers["File Name"]
-    trans_col = headers["Translation"]
+    tts_col = headers[get_tts_column_name(job)]
 
     total = ws.max_row - 1
     skipped = 0
@@ -1014,30 +1357,31 @@ def generate_audio(client, job, audio_format):
             column=file_col
         ).value
 
-        translated = ws.cell(
+        tts_text = ws.cell(
             row=row,
-            column=trans_col
+            column=tts_col
         ).value
 
-        # -------- FIXED A MODE --------
+        if not tts_text:
 
-        if not translated:
-
-            if job["mode"] == "A":
-
-                print(
-                    f"[{job['name']}] "
-                    f"Missing translation : "
-                    f"{filename}"
-                )
+            print(
+                f"[{job['name']}] "
+                f"Missing text : "
+                f"{filename}"
+            )
 
             continue
 
         base = os.path.splitext(filename)[0]
 
         temp_output = os.path.join(
-            job["audio_folder"],
+            job["preview_folder"],
             f"{job['prefix']}_{base}.wav"
+        )
+
+        preview_output = os.path.join(
+            job["preview_folder"],
+            f"{job['prefix']}_{base}.{audio_format}"
         )
 
         final_output = os.path.join(
@@ -1046,6 +1390,10 @@ def generate_audio(client, job, audio_format):
         )
 
         if os.path.exists(final_output):
+            skipped += 1
+            continue
+
+        if os.path.exists(preview_output):
             skipped += 1
             continue
 
@@ -1058,7 +1406,7 @@ def generate_audio(client, job, audio_format):
         try:
 
             audio = client.text_to_speech.convert(
-                text=translated,
+                text=tts_text,
                 target_language_code=job["code"],
                 model="bulbul:v3",
                 speaker=job["speaker"],
@@ -1067,7 +1415,7 @@ def generate_audio(client, job, audio_format):
 
             save(audio, temp_output)
 
-            final_output = convert_audio(
+            convert_audio(
                 temp_output,
                 audio_format
             )
@@ -1077,7 +1425,7 @@ def generate_audio(client, job, audio_format):
         except Exception as e:
             print(e)
             
-def process_language(api_key, project, transcript_excel, job, audio_format):
+def process_language(api_key, project, transcript_excel, job, audio_format, input_type="audio"):
 
     try:
 
@@ -1085,7 +1433,8 @@ def process_language(api_key, project, transcript_excel, job, audio_format):
 
         populate_language_excel(
               transcript_excel,
-                job
+                job,
+                input_type
                )
 
         translate_language(
@@ -1094,6 +1443,12 @@ def process_language(api_key, project, transcript_excel, job, audio_format):
         )
 
         generate_audio(
+            client,
+            job,
+            audio_format
+        )
+
+        review_generated_audio(
             client,
             job,
             audio_format
@@ -1123,76 +1478,30 @@ def run_pipeline(
     jobs,
     
     transcript_excel,
-
-    processing_mode,
     
-    audio_format
+    audio_format,
+
+    input_type="audio"
     
   ):
 
-    if processing_mode == "sequential":
+    for job in jobs:
 
-        for job in jobs:
+        process_language(
 
-            process_language(
+            api_key,
 
-                api_key,
-
-                project,
+            project,
                 
-                transcript_excel,
+            transcript_excel,
 
-                job,
+            job,
                 
-                audio_format
+            audio_format,
 
-            )
-
-        return
-
-    with ThreadPoolExecutor(
-
-        max_workers=min(
-
-            len(jobs),
-
-            os.cpu_count() or 4
+            input_type
 
         )
-
-    ) as executor:
-
-        futures = [
-
-            executor.submit(
-
-                process_language,
-
-                api_key,
-
-                project,
-                
-                transcript_excel,
-
-                job,
-                
-                audio_format
-
-            )
-
-            for job in jobs
-
-        ]
-
-        for future in as_completed(futures):
-
-            try:
-
-                future.result()
-
-            except Exception as e:
-
-                print(e)
 
 
 # ============================================================
@@ -1203,7 +1512,7 @@ def main():
 
     input_type = get_input_type()
     
-    transcript_language = "en-IN"
+    transcript_language = None
 
     transcript_excel = None
 
@@ -1214,7 +1523,6 @@ def main():
         project = get_project_folder()
     else:
         transcript_excel = get_transcript_excel()
-        transcript_language = get_transcript_language()
         project = os.path.dirname(transcript_excel)
 
     project_mode = get_project_mode(project)
@@ -1268,13 +1576,25 @@ def main():
 
         return
 
-    processing_mode = get_processing_mode()
-
-    translation_mode = get_translation_mode()
-
     language_ids = get_target_languages()
 
-    jobs = configure_languages(language_ids)
+    jobs = configure_languages(
+        language_ids,
+        transcript_excel,
+        input_type
+    )
+    
+    needs_translation = any(
+    job["mode"] in ("T", "TA")
+    for job in jobs
+)
+
+    if needs_translation:
+        transcript_language = get_transcript_language()
+        translation_mode = get_translation_mode()
+    else:
+        transcript_language = None
+        translation_mode = None
 
     for job in jobs:
         job["translation_mode"] = translation_mode
@@ -1292,8 +1612,8 @@ def main():
         project,
         jobs,
         transcript_excel,
-        processing_mode,
-        audio_format
+        audio_format,
+        input_type
     )
 
     
